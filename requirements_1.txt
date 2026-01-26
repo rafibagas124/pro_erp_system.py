@@ -1,0 +1,8 @@
+streamlit
+pandas
+fpdf
+qrcode
+Pillow
+openpyxl
+xlsxwriter
+matplotlib
