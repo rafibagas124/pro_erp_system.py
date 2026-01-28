@@ -1,8 +1,10 @@
 streamlit
 pandas
-fpdf
+sqlite3
 qrcode
+base64
+fpdf
+plotly
+streamlit-aggrid
 Pillow
-openpyxl
-xlsxwriter
-matplotlib
+bcrypt
