@@ -1,9 +1,8 @@
 streamlit
 pandas
+plotly
+openpyxl
+streamlit-aggrid
+fpdf
 qrcode
 Pillow
-fpdf
-plotly
-streamlit-aggrid
-bcrypt
-openpyxl
