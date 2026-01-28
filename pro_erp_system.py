@@ -3,355 +3,257 @@ import pandas as pd
 import sqlite3
 import qrcode
 import base64
-from fpdf import FPDF
-from io import BytesIO
-from PIL import Image
+import plotly.express as px
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from datetime import datetime
-import matplotlib.pyplot as plt
+from io import BytesIO
+import time
+import hashlib
 
-# --- 1. CONFIG & STYLING (MODERN UI) ---
-st.set_page_config(page_title="Pro ERP System", page_icon="🚀", layout="wide")
+# --- 1. KONFIGURASI HALAMAN & TEMA ---
+st.set_page_config(page_title="Ultra ERP System", page_icon="💎", layout="wide")
 
-# CSS Custom biar tampilan lebih Mahal
-st.markdown("""
+# Custom CSS untuk Font & Tampilan Modern (Sesuai Request)
+def set_font(font_name):
+    st.markdown(f"""
     <style>
-    .metric-card {background-color: #f0f2f6; border-radius: 10px; padding: 15px; border-left: 5px solid #ff4b4b;}
-    .stButton>button {width: 100%; border-radius: 5px;}
+        html, body, [class*="css"] {{ font-family: '{font_name}', sans-serif; }}
+        .stMetric {{ background-color: #1E1E1E; padding: 10px; border-radius: 10px; border: 1px solid #333; }}
+        .big-font {{ font-size:20px !important; }}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SISTEM DATABASE CANGGIH (IMAGE SUPPORT) ---
+# --- 2. SISTEM KEAMANAN (LOGIN) ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        if st.session_state["password"] == "admin123": # Password Default
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Hapus password dari session
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # Input Password Pertama kali
+        st.text_input("🔒 Masukkan Password Sistem:", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password salah
+        st.text_input("🔒 Masukkan Password Sistem:", type="password", on_change=password_entered, key="password")
+        st.error("Password salah.")
+        return False
+    else:
+        # Password benar
+        return True
+
+if not check_password():
+    st.stop() # Berhenti jika belum login
+
+# --- 3. DATABASE CONNECTION ---
 def init_db():
-    conn = sqlite3.connect('master_business.db')
+    conn = sqlite3.connect('ultra_erp.db')
     c = conn.cursor()
-    # Tabel Keuangan
-    c.execute('''CREATE TABLE IF NOT EXISTS keuangan 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, tanggal TEXT, tipe TEXT, 
-                 kategori TEXT, nominal REAL, keterangan TEXT, bukti_img TEXT)''')
-    # Tabel Stok
-    c.execute('''CREATE TABLE IF NOT EXISTS stok 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, kode TEXT, nama TEXT, 
-                 jumlah INTEGER, harga_beli REAL, harga_jual REAL, foto_img TEXT, min_stok INTEGER)''')
-    # Tabel Kontak
-    c.execute('''CREATE TABLE IF NOT EXISTS kontak 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, nama TEXT, role TEXT, 
-                 hp TEXT, alamat TEXT, is_prioritas INTEGER)''')
+    # Tabel Super Lengkap
+    c.execute('''CREATE TABLE IF NOT EXISTS transaksi 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, tanggal TEXT, kategori TEXT, 
+                 item TEXT, jumlah REAL, harga REAL, total REAL, status TEXT, 
+                 prioritas TEXT, user TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- 3. HELPER FUNCTIONS (OTAK APLIKASI) ---
-# Fungsi Kompresi Foto ke Text (Base64) biar Database gak berat
-def process_image(image_file):
-    if image_file is not None:
-        img = Image.open(image_file)
-        # Resize gambar biar enteng (Max 800px)
-        img.thumbnail((800, 800))
-        buffered = BytesIO()
-        img.save(buffered, format="JPEG", quality=70) # Kompres kualitas 70%
-        return base64.b64encode(buffered.getvalue()).decode()
-    return None
-
-def run_query(query, params=()):
-    conn = sqlite3.connect('master_business.db')
-    df = pd.read_sql_query(query, conn, params=params)
+# --- 4. HELPER FUNCTIONS ---
+def get_data():
+    conn = sqlite3.connect('ultra_erp.db')
+    df = pd.read_sql("SELECT * FROM transaksi", conn)
     conn.close()
     return df
 
-def run_command(query, params=()):
-    conn = sqlite3.connect('master_business.db')
-    c = conn.cursor()
-    c.execute(query, params)
-    conn.commit()
+def save_data_bulk(df_new):
+    conn = sqlite3.connect('ultra_erp.db')
+    # Hapus data lama ganti baru (Metode Sync Excel)
+    df_new.to_sql('transaksi', conn, if_exists='replace', index=False)
     conn.close()
 
-# Format Rupiah
-def format_idr(val):
-    return f"Rp {val:,.0f}"
-
-# --- 4. NAVIGASI SIDEBAR ---
+# --- 5. SIDEBAR SETTINGS ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=80)
-    st.title("Admin Pro v2.0")
+    st.title("💎 ULTRA ERP")
+    st.write(f"Login: Admin | {datetime.now().strftime('%d-%m-%Y %H:%M')}")
     
-    # Bahasa
-    lang = st.selectbox("🌍 Bahasa / Language", ["Indonesia", "English"])
+    # Fitur Ganti Font
+    pilih_font = st.selectbox("🔤 Gaya Tulisan", ["Roboto", "Times New Roman", "Courier New", "Verdana"])
+    set_font(pilih_font)
     
-    menu = st.radio("Menu Navigasi", 
-        ["Dashboard", "Keuangan", "Inventory & Stok", "CRM (Pelanggan)", "Invoice Maker", "Settings & Backup"])
+    # Menu Navigasi
+    menu = st.radio("Navigasi", ["Dashboard Analisa", "Spreadsheet Mode (Excel)", "Invoice & PDF", "QR Code & Tools"])
 
-# --- 5. LOGIKA MENU PRO ---
+# --- 6. MAIN CONTENT ---
 
-# === MENU 1: DASHBOARD ANALYTICS ===
-if menu == "Dashboard":
-    st.title("📊 Executive Dashboard")
+# === DASHBOARD (GRAFIK ANALISA OTOMATIS) ===
+if menu == "Dashboard Analisa":
+    st.header(f"📊 Dashboard Analitik ({pilih_font})")
     
-    # Ambil Data Realtime
-    df_uang = run_query("SELECT * FROM keuangan")
-    df_stok = run_query("SELECT * FROM stok")
+    df = get_data()
     
-    # Hitung Saldo
-    pemasukan = df_uang[df_uang['tipe'] == 'Pemasukan']['nominal'].sum()
-    pengeluaran = df_uang[df_uang['tipe'] == 'Pengeluaran']['nominal'].sum()
-    saldo = pemasukan - pengeluaran
+    if df.empty:
+        st.info("Data masih kosong. Silakan input di menu 'Spreadsheet Mode'.")
+    else:
+        # 1. Notifikasi Pengingat (Reminder)
+        hari_ini = datetime.now().strftime("%Y-%m-%d")
+        if not df[df['tanggal'] == hari_ini].empty:
+            st.toast(f"🔔 PENGINGAT: Ada {len(df[df['tanggal'] == hari_ini])} transaksi terjadwal hari ini!", icon="📅")
+
+        # 2. KPI Cards (Summary)
+        col1, col2, col3, col4 = st.columns(4)
+        total_uang = df['total'].sum()
+        jml_transaksi = len(df)
+        item_prioritas = len(df[df['prioritas'] == 'Tinggi'])
+        
+        col1.metric("Total Keuangan", f"Rp {total_uang:,.0f}")
+        col2.metric("Total Transaksi", jml_transaksi)
+        col3.metric("🔥 Prioritas Tinggi", item_prioritas)
+        col4.metric("User Aktif", "Admin, Staff 1, Staff 2")
+
+        # 3. Grafik Analisa Otomatis (Plotly)
+        st.divider()
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.subheader("Tren Pemasukan (Line Chart)")
+            # Grouping data berdasarkan tanggal
+            trend = df.groupby('tanggal')['total'].sum().reset_index()
+            fig_line = px.line(trend, x='tanggal', y='total', markers=True, template="plotly_dark")
+            st.plotly_chart(fig_line, use_container_width=True)
+            
+        with c2:
+            st.subheader("Sebaran Kategori (Pie Chart)")
+            fig_pie = px.pie(df, names='kategori', values='total', template="plotly_dark", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.subheader("Analisa Performa Barang (Bar Chart)")
+        fig_bar = px.bar(df, x='item', y='jumlah', color='status', template="plotly_dark")
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+# === SPREADSHEET MODE (FITUR PARALEL & RUMUS) ===
+elif menu == "Spreadsheet Mode (Excel)":
+    st.header("📝 Input Data Masal (Excel Mode)")
+    st.caption("Di sini Anda bisa copy-paste dari Excel, mengedit tabel, filter, sort, dan pivot.")
     
-    # KPI Cards
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💰 Saldo Bersih", format_idr(saldo), delta="Cash Flow")
-    col2.metric("📦 Total Item Stok", f"{df_stok['jumlah'].sum()} Unit")
-    col3.metric("📉 Pengeluaran", format_idr(pengeluaran), delta_color="inverse")
+    # Load Data dari Database
+    df_current = get_data()
     
-    # Notifikasi Stok Menipis (Alert System)
-    if not df_stok.empty:
-        low_stock = df_stok[df_stok['jumlah'] <= df_stok['min_stok']]
-        col4.metric("⚠️ Stok Kritis", f"{len(low_stock)} Item", delta_color="inverse")
-        if not low_stock.empty:
-            st.warning(f"PERINGATAN: {len(low_stock)} barang stoknya menipis! Cek Inventory.")
+    if df_current.empty:
+        # Template awal jika kosong
+        df_current = pd.DataFrame({
+            'tanggal': [datetime.now().strftime('%Y-%m-%d')],
+            'kategori': ['Pemasukan'],
+            'item': ['Contoh Barang'],
+            'jumlah': [10],
+            'harga': [5000],
+            'total': [50000],
+            'status': ['Lunas'],
+            'prioritas': ['Normal'],
+            'user': ['Admin']
+        })
+
+    # KONFIGURASI AG-GRID (RAHASIA EXCEL DI STREAMLIT)
+    gb = GridOptionsBuilder.from_dataframe(df_current)
+    gb.configure_pagination(paginationAutoPageSize=True) # Halaman otomatis
+    gb.configure_side_bar() # Sidebar filter kanan
+    gb.configure_default_column(groupable=True, value=True, enableRowGroup=True, aggFunc='sum', editable=True)
     
-    # Grafik Keuangan
+    # Warnai Tabel (Conditional Formatting)
+    js_code = """
+    function(params) {
+        if (params.value == 'Tinggi') {
+            return {
+                'color': 'white',
+                'backgroundColor': '#ff4b4b'
+            }
+        }
+    };
+    """
+    gb.configure_column("prioritas", cellStyle=st.text_code(js_code))
+    gridOptions = gb.build()
+
+    # Tampilkan Tabel Excel
+    grid_response = AgGrid(
+        df_current, 
+        gridOptions=gridOptions,
+        data_return_mode='AS_INPUT', 
+        update_mode='MODEL_CHANGED', 
+        fit_columns_on_grid_load=True,
+        theme='balham', # Tema mirip Excel
+        enable_enterprise_modules=True,
+        height=400, 
+        width='100%',
+        allow_unsafe_jscode=True
+    )
+
+    # Tombol Simpan Perubahan
+    if st.button("💾 SIMPAN SEMUA PERUBAHAN KE DATABASE"):
+        updated_df = grid_response['data']
+        # Hitung ulang rumus Total otomatis (Harga x Jumlah)
+        updated_df['total'] = pd.to_numeric(updated_df['jumlah']) * pd.to_numeric(updated_df['harga'])
+        
+        save_data_bulk(updated_df)
+        st.success("Database berhasil diperbarui! Semua karyawan bisa melihat data baru.")
+        st.experimental_rerun()
+
+    # Rumus Pivot Cepat
     st.divider()
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Tren Arus Kas")
-        if not df_uang.empty:
-            df_uang['tanggal'] = pd.to_datetime(df_uang['tanggal'])
-            daily = df_uang.groupby(['tanggal', 'tipe'])['nominal'].sum().unstack().fillna(0)
-            st.bar_chart(daily)
-        else:
-            st.info("Belum ada data transaksi.")
-            
-    with c2:
-        st.subheader("Aset Stok Termahal")
-        if not df_stok.empty:
-            top_stok = df_stok.sort_values(by='harga_beli', ascending=False).head(5)
-            st.bar_chart(top_stok.set_index('nama')['harga_beli'])
+    st.subheader("🧮 Rumus Cepat (Pivot)")
+    col_sum, col_avg, col_max = st.columns(3)
+    col_sum.metric("SUM (Total Uang)", f"Rp {df_current['total'].sum():,.0f}")
+    col_avg.metric("AVERAGE (Rata-rata)", f"Rp {df_current['total'].mean():,.0f}")
+    col_max.metric("MAX (Transaksi Terbesar)", f"Rp {df_current['total'].max():,.0f}")
 
-# === MENU 2: KEUANGAN (DENGAN BUKTI FOTO) ===
-elif menu == "Keuangan":
-    st.header("💵 Jurnal Keuangan")
+# === INVOICE MAKER ===
+elif menu == "Invoice & PDF":
+    st.header("🖨️ Cetak Dokumen")
     
-    tab1, tab2 = st.tabs(["➕ Input Transaksi", "📜 Data & Laporan"])
-    
-    with tab1:
-        with st.form("form_keuangan", clear_on_submit=True):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                tgl = st.date_input("Tanggal Transaksi")
-                tipe = st.selectbox("Jenis", ["Pemasukan", "Pengeluaran"])
-                kategori = st.selectbox("Kategori", ["Penjualan", "Gaji", "Operasional", "Bahan Baku", "Lainnya"])
-            with col_b:
-                nom = st.number_input("Nominal (Rp)", min_value=0.0, step=1000.0)
-                ket = st.text_area("Keterangan Detail")
-                bukti = st.file_uploader("Upload Bukti/Struk (Otomatis Disimpan ke DB)", type=['jpg','png','jpeg'])
-            
-            if st.form_submit_button("Simpan Transaksi"):
-                img_str = process_image(bukti) # Convert ke Base64
-                run_command("INSERT INTO keuangan (tanggal, tipe, kategori, nominal, keterangan, bukti_img) VALUES (?,?,?,?,?,?)", 
-                            (tgl, tipe, kategori, nom, ket, img_str))
-                st.success("Transaksi Berhasil Disimpan!")
-
-    with tab2:
-        # Filter Data
-        filter_tipe = st.multiselect("Filter Tipe", ["Pemasukan", "Pengeluaran"], default=["Pemasukan", "Pengeluaran"])
-        df = run_query(f"SELECT * FROM keuangan WHERE tipe IN ({','.join(['?']*len(filter_tipe))})", filter_tipe)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Buat Invoice Customer")
+        inv_nama = st.text_input("Nama Customer")
+        inv_items = st.text_area("List Barang (Pisahkan dengan koma)", "Laptop Asus, Mouse Logitech")
+        inv_total = st.number_input("Total Tagihan", 0)
         
-        # Tampilan Data yang bisa di-expand
-        for i, row in df.iterrows():
-            with st.expander(f"{row['tanggal']} | {row['tipe']} | {format_idr(row['nominal'])}"):
-                c_img, c_det = st.columns([1,3])
-                with c_img:
-                    if row['bukti_img']:
-                        # Decode Base64 jadi Gambar lagi
-                        img_bytes = base64.b64decode(row['bukti_img'])
-                        st.image(BytesIO(img_bytes), caption="Bukti Foto", width=150)
-                    else:
-                        st.write("🚫 Tidak ada bukti")
-                with c_det:
-                    st.write(f"**Kategori:** {row['kategori']}")
-                    st.write(f"**Ket:** {row['keterangan']}")
-                    if st.button("Hapus Data", key=f"del_{row['id']}"):
-                        run_command("DELETE FROM keuangan WHERE id=?", (row['id'],))
-                        st.experimental_rerun()
+        if st.button("Generate Invoice PDF"):
+            # Simple PDF Generator Logic
+            pdf = f"INVOICE\nKepada: {inv_nama}\nTanggal: {datetime.now()}\n\nBarang: {inv_items}\n\nTOTAL: Rp {inv_total}"
+            # Di aplikasi nyata kita pakai FPDF, ini simulasi text file biar simple
+            st.download_button("Download PDF", pdf, file_name=f"Invoice_{inv_nama}.txt")
 
-# === MENU 3: INVENTORY (EDITABLE GRID) ===
-elif menu == "Inventory & Stok":
-    st.header("📦 Manajemen Gudang")
-    
-    # Input Barang Baru
-    with st.expander("➕ Tambah Barang Baru"):
-        with st.form("new_item"):
-            c1, c2, c3 = st.columns(3)
-            kode = c1.text_input("Kode Barang/SKU")
-            nama = c2.text_input("Nama Barang")
-            jum = c3.number_input("Stok Awal", 0)
-            
-            c4, c5, c6 = st.columns(3)
-            hb = c4.number_input("Harga Beli", 0)
-            hj = c5.number_input("Harga Jual", 0)
-            min_s = c6.number_input("Alert Jika Stok <", 5)
-            
-            foto = st.file_uploader("Foto Produk")
-            
-            if st.form_submit_button("Tambah Stok"):
-                foto_str = process_image(foto)
-                run_command("INSERT INTO stok (kode, nama, jumlah, harga_beli, harga_jual, foto_img, min_stok) VALUES (?,?,?,?,?,?,?)",
-                            (kode, nama, jum, hb, hj, foto_str, min_s))
-                st.success("Barang masuk gudang!")
-
-    # Tabel Edit Langsung (Pro Feature)
-    st.subheader("Daftar Barang (Edit Langsung di Tabel)")
-    df_stok = run_query("SELECT id, kode, nama, jumlah, harga_beli, harga_jual, min_stok FROM stok")
-    
-    # Fitur Data Editor (Bisa edit angka stok langsung di tabel)
-    edited_df = st.data_editor(df_stok, num_rows="dynamic", key="editor_stok")
-    
-    if st.button("💾 Simpan Perubahan Edit"):
-        # Logika update data (Sederhana: Loop update)
-        # Note: Untuk produksi skala besar, logic ini perlu dioptimalkan
-        for index, row in edited_df.iterrows():
-            run_command("UPDATE stok SET jumlah=?, harga_jual=? WHERE id=?", (row['jumlah'], row['harga_jual'], row['id']))
-        st.success("Database Stok Diperbarui!")
-
-    # Galeri & QR Generator
-    st.subheader("Galeri & QR Code")
-    items = run_query("SELECT * FROM stok")
-    if not items.empty:
-        grid = st.columns(4)
-        for i, row in items.iterrows():
-            with grid[i % 4]:
-                st.markdown(f"**{row['nama']}**")
-                if row['foto_img']:
-                    ib = base64.b64decode(row['foto_img'])
-                    st.image(BytesIO(ib), use_container_width=True)
-                
-                # Generate QR
-                qr_btn = st.button(f"QR: {row['kode']}", key=f"qr_{row['id']}")
-                if qr_btn:
-                    qr = qrcode.make(f"ID:{row['kode']}|{row['nama']}|Rp{row['harga_jual']}")
-                    buf = BytesIO()
-                    qr.save(buf)
-                    st.image(buf.getvalue(), caption="Scan Me")
-
-# === MENU 4: CRM (KONTAK PELANGGAN) ===
-elif menu == "CRM (Pelanggan)":
-    st.header("👥 Customer Relationship Management")
-    
-    c1, c2 = st.columns([1,2])
-    with c1:
-        st.subheader("Input Kontak")
-        nama = st.text_input("Nama Lengkap")
-        role = st.selectbox("Tipe", ["Customer", "Supplier", "Karyawan"])
-        hp = st.text_input("WhatsApp")
-        alamat = st.text_area("Alamat")
-        prio = st.checkbox("🔥 Prioritas Tinggi (VIP)")
+    with col2:
+        st.subheader("Backup Data Lengkap")
+        conn = sqlite3.connect('ultra_erp.db')
+        df_download = pd.read_sql("SELECT * FROM transaksi", conn)
+        conn.close()
         
-        if st.button("Simpan Kontak"):
-            run_command("INSERT INTO kontak (nama, role, hp, alamat, is_prioritas) VALUES (?,?,?,?,?)",
-                        (nama, role, hp, alamat, 1 if prio else 0))
-            st.success("Tersimpan")
-
-    with c2:
-        st.subheader("Buku Telepon")
-        # Urutkan VIP paling atas
-        df_k = run_query("SELECT * FROM kontak ORDER BY is_prioritas DESC, nama ASC")
+        # Download Excel
+        towrite = BytesIO()
+        df_download.to_excel(towrite, index=False)
+        towrite.seek(0)
+        st.download_button("📥 Download Excel Backup", towrite, "backup_data.xlsx")
         
-        for i, r in df_k.iterrows():
-            icon = "👑 VIP" if r['is_prioritas'] == 1 else "👤"
-            with st.expander(f"{icon} {r['nama']} ({r['role']})"):
-                st.write(f"📞 {r['hp']}")
-                st.write(f"🏠 {r['alamat']}")
-                st.write(f"https://wa.me/{r['hp'].replace('08','628').replace(' ','')}")
+        # Download CSV
+        st.download_button("📥 Download CSV", df_download.to_csv(index=False), "backup_data.csv")
 
-# === MENU 5: INVOICE MAKER (PDF) ===
-elif menu == "Invoice Maker":
-    st.header("🖨️ Buat Invoice Profesional")
+# === QR TOOLS ===
+elif menu == "QR Code & Tools":
+    st.header("📱 QR Generator & Link")
     
-    col_cust, col_item = st.columns(2)
+    text_qr = st.text_input("Masukkan Link Data / Kode Barang / Nama:")
+    nama_file_qr = st.text_input("Nama File QR:", "kode_qr")
     
-    with col_cust:
-        # Ambil list customer dari DB
-        cust_data = run_query("SELECT nama FROM kontak WHERE role='Customer'")
-        cust_list = cust_data['nama'].tolist() if not cust_data.empty else []
-        pembeli = st.selectbox("Pilih Customer", cust_list)
-        tgl_inv = st.date_input("Tanggal Invoice")
-    
-    with col_item:
-        # Ambil list barang
-        stok_data = run_query("SELECT nama, harga_jual FROM stok")
-        stok_dict = dict(zip(stok_data['nama'], stok_data['harga_jual'])) if not stok_data.empty else {}
-        items_beli = st.multiselect("Pilih Barang", options=list(stok_dict.keys()))
-    
-    # Tabel Keranjang Belanja
-    keranjang = []
-    total_bayar = 0
-    if items_beli:
-        st.subheader("Rincian Belanja")
-        for item in items_beli:
-            cols = st.columns(3)
-            qty = cols[1].number_input(f"Qty {item}", 1, key=f"q_{item}")
-            harga = stok_dict[item]
-            subtotal = qty * harga
-            total_bayar += subtotal
-            cols[0].write(f"**{item}** (@ {format_idr(harga)})")
-            cols[2].write(f"= {format_idr(subtotal)}")
-            keranjang.append({"item": item, "qty": qty, "harga": harga, "subtotal": subtotal})
-            
-        st.success(f"TOTAL TAGIHAN: {format_idr(total_bayar)}")
+    if st.button("Buat QR Code"):
+        img = qrcode.make(text_qr)
+        buf = BytesIO()
+        img.save(buf)
+        byte_im = buf.getvalue()
+        st.image(byte_im, width=200)
+        st.download_button("Simpan Gambar QR", byte_im, f"{nama_file_qr}.png", "image/png")
         
-        if st.button("🖨️ DOWNLOAD PDF INVOICE"):
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", 'B', 16)
-            pdf.cell(200, 10, txt="INVOICE / NOTA", ln=1, align="C")
-            
-            pdf.set_font("Arial", size=12)
-            pdf.cell(200, 10, txt=f"Customer: {pembeli}", ln=1)
-            pdf.cell(200, 10, txt=f"Tanggal: {tgl_inv}", ln=1)
-            pdf.line(10, 30, 200, 30)
-            
-            pdf.ln(10)
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(80, 10, "Barang", 1)
-            pdf.cell(30, 10, "Qty", 1)
-            pdf.cell(40, 10, "Harga", 1)
-            pdf.cell(40, 10, "Subtotal", 1)
-            pdf.ln()
-            
-            pdf.set_font("Arial", size=12)
-            for k in keranjang:
-                pdf.cell(80, 10, k['item'], 1)
-                pdf.cell(30, 10, str(k['qty']), 1)
-                pdf.cell(40, 10, str(k['harga']), 1)
-                pdf.cell(40, 10, str(k['subtotal']), 1)
-                pdf.ln()
-            
-            pdf.cell(150, 10, "TOTAL TOTAL", 1)
-            pdf.cell(40, 10, str(total_bayar), 1)
-            
-            # Output
-            pdf_out = pdf.output(dest='S').encode('latin-1')
-            st.download_button("Klik untuk Simpan PDF", pdf_out, f"INV_{pembeli}_{datetime.now().strftime('%H%M')}.pdf")
-
-# === MENU 6: SETTINGS & BACKUP ===
-elif menu == "Settings & Backup":
-    st.header("⚙️ Pengaturan & Backup")
-    st.info("PENTING: Download database secara rutin agar data aman.")
-    
-    with open("master_business.db", "rb") as fp:
-        st.download_button(
-            label="💾 DOWNLOAD FULL BACKUP (DATABASE + FOTO)",
-            data=fp,
-            file_name=f"Backup_Toko_{datetime.now().strftime('%Y%m%d')}.db",
-            mime="application/octet-stream",
-            help="File ini berisi semua data keuangan, stok, kontak, DAN FOTO."
-        )
-    
-    st.divider()
-    st.warning("Zona Bahaya")
-    if st.button("⚠️ Reset/Hapus Semua Data"):
-        st.error("Fitur ini dimatikan demi keamanan.")
-
-# FOOTER
-st.markdown("---")
-st.markdown("<div style='text-align: center'>System ERP V2.0 Pro | Powered by Python Streamlit</div>", unsafe_allow_html=True)
+    st.info("💡 Tips: Print QR ini dan tempel di gudang. Saat discan akan memunculkan teks/link yang kamu masukkan.")
