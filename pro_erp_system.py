@@ -1,259 +1,214 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
-import qrcode
-import base64
 import plotly.express as px
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
-from datetime import datetime
+from st_aggrid import AgGrid, GridOptionsBuilder
+from fpdf import FPDF
+import qrcode
 from io import BytesIO
-import time
-import hashlib
+from datetime import datetime
+import os
 
-# --- 1. KONFIGURASI HALAMAN & TEMA ---
-st.set_page_config(page_title="Ultra ERP System", page_icon="💎", layout="wide")
+# --- 1. KONFIGURASI HALAMAN & CSS CUSTOM ---
+st.set_page_config(page_title="Super ERP System", layout="wide", page_icon="📊")
 
-# Custom CSS untuk Font & Tampilan Modern (Sesuai Request)
-def set_font(font_name):
-    st.markdown(f"""
+# Custom CSS untuk Font Times New Roman (Sesuai request)
+st.markdown("""
     <style>
-        html, body, [class*="css"] {{ font-family: '{font_name}', sans-serif; }}
-        .stMetric {{ background-color: #1E1E1E; padding: 10px; border-radius: 10px; border: 1px solid #333; }}
-        .big-font {{ font-size:20px !important; }}
+    html, body, [class*="css"]  {
+        font-family: 'Times New Roman', serif; 
+    }
+    .stApp {
+        background-image: linear-gradient(to right top, #ffffff, #f0f2f6);
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SISTEM KEAMANAN (LOGIN) ---
-def check_password():
-    """Returns `True` if the user had the correct password."""
-    def password_entered():
-        if st.session_state["password"] == "admin123": # Password Default
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Hapus password dari session
-        else:
-            st.session_state["password_correct"] = False
+# --- 2. FUNGSI UTILITAS (BACKEND SEDERHANA) ---
 
-    if "password_correct" not in st.session_state:
-        # Input Password Pertama kali
-        st.text_input("🔒 Masukkan Password Sistem:", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        # Password salah
-        st.text_input("🔒 Masukkan Password Sistem:", type="password", on_change=password_entered, key="password")
-        st.error("Password salah.")
-        return False
+# Simulasi Database (Menggunakan CSV agar ringan & portable)
+DATA_FILE = 'data/transaksi.csv'
+if not os.path.exists('data'):
+    os.makedirs('data')
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        return pd.read_csv(DATA_FILE)
     else:
-        # Password benar
-        return True
+        return pd.DataFrame(columns=['Tanggal', 'Kategori', 'Keterangan', 'Masuk', 'Keluar', 'Pelanggan', 'Status'])
 
-if not check_password():
-    st.stop() # Berhenti jika belum login
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
 
-# --- 3. DATABASE CONNECTION ---
-def init_db():
-    conn = sqlite3.connect('ultra_erp.db')
-    c = conn.cursor()
-    # Tabel Super Lengkap
-    c.execute('''CREATE TABLE IF NOT EXISTS transaksi 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, tanggal TEXT, kategori TEXT, 
-                 item TEXT, jumlah REAL, harga REAL, total REAL, status TEXT, 
-                 prioritas TEXT, user TEXT)''')
-    conn.commit()
-    conn.close()
+# Multi-bahasa
+lang_dict = {
+    "ID": {"title": "Sistem Manajemen Keuangan & Stok", "menu": "Navigasi", "add": "Tambah Data", "save": "Simpan"},
+    "EN": {"title": "Financial & Stock Management System", "menu": "Navigation", "add": "Add Data", "save": "Save"}
+}
 
-init_db()
-
-# --- 4. HELPER FUNCTIONS ---
-def get_data():
-    conn = sqlite3.connect('ultra_erp.db')
-    df = pd.read_sql("SELECT * FROM transaksi", conn)
-    conn.close()
-    return df
-
-def save_data_bulk(df_new):
-    conn = sqlite3.connect('ultra_erp.db')
-    # Hapus data lama ganti baru (Metode Sync Excel)
-    df_new.to_sql('transaksi', conn, if_exists='replace', index=False)
-    conn.close()
-
-# --- 5. SIDEBAR SETTINGS ---
+# --- 3. SIDEBAR & NAVIGASI ---
 with st.sidebar:
-    st.title("💎 ULTRA ERP")
-    st.write(f"Login: Admin | {datetime.now().strftime('%d-%m-%Y %H:%M')}")
+    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
+    bahasa = st.selectbox("Bahasa / Language", ["ID", "EN"])
+    txt = lang_dict[bahasa]
     
-    # Fitur Ganti Font
-    pilih_font = st.selectbox("🔤 Gaya Tulisan", ["Roboto", "Times New Roman", "Courier New", "Verdana"])
-    set_font(pilih_font)
-    
-    # Menu Navigasi
-    menu = st.radio("Navigasi", ["Dashboard Analisa", "Spreadsheet Mode (Excel)", "Invoice & PDF", "QR Code & Tools"])
+    st.header(txt["menu"])
+    menu = st.radio("Pilih Fitur:", 
+        ["Dashboard & Grafik", "Input Transaksi (Excel Style)", "Invoice & Print", "File Manager & QR", "Kontak & Prioritas"])
 
-# --- 6. MAIN CONTENT ---
+    st.info("💡 Tips: Aplikasi ini menyimpan data secara otomatis.")
 
-# === DASHBOARD (GRAFIK ANALISA OTOMATIS) ===
-if menu == "Dashboard Analisa":
-    st.header(f"📊 Dashboard Analitik ({pilih_font})")
-    
-    df = get_data()
-    
-    if df.empty:
-        st.info("Data masih kosong. Silakan input di menu 'Spreadsheet Mode'.")
-    else:
-        # 1. Notifikasi Pengingat (Reminder)
-        hari_ini = datetime.now().strftime("%Y-%m-%d")
-        if not df[df['tanggal'] == hari_ini].empty:
-            st.toast(f"🔔 PENGINGAT: Ada {len(df[df['tanggal'] == hari_ini])} transaksi terjadwal hari ini!", icon="📅")
+# --- 4. FITUR UTAMA ---
 
-        # 2. KPI Cards (Summary)
-        col1, col2, col3, col4 = st.columns(4)
-        total_uang = df['total'].sum()
-        jml_transaksi = len(df)
-        item_prioritas = len(df[df['prioritas'] == 'Tinggi'])
+df = load_data()
+
+# A. DASHBOARD & GRAFIK (Analisa)
+if menu == "Dashboard & Grafik":
+    st.title(f"📊 {txt['title']}")
+    
+    # Ringkasan (Sum)
+    total_masuk = df['Masuk'].sum()
+    total_keluar = df['Keluar'].sum()
+    selisih = total_masuk - total_keluar
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Pemasukan", f"Rp {total_masuk:,.0f}")
+    col2.metric("Total Pengeluaran", f"Rp {total_keluar:,.0f}")
+    col3.metric("Sisa Saldo / Profit", f"Rp {selisih:,.0f}", delta_color="normal")
+
+    # Grafik (Otomatis muncul sesuai data)
+    st.subheader("Analisa Grafik")
+    if not df.empty:
+        tab1, tab2 = st.tabs(["Grafik Batang", "Grafik Lingkaran"])
         
-        col1.metric("Total Keuangan", f"Rp {total_uang:,.0f}")
-        col2.metric("Total Transaksi", jml_transaksi)
-        col3.metric("🔥 Prioritas Tinggi", item_prioritas)
-        col4.metric("User Aktif", "Admin, Staff 1, Staff 2")
-
-        # 3. Grafik Analisa Otomatis (Plotly)
-        st.divider()
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            st.subheader("Tren Pemasukan (Line Chart)")
-            # Grouping data berdasarkan tanggal
-            trend = df.groupby('tanggal')['total'].sum().reset_index()
-            fig_line = px.line(trend, x='tanggal', y='total', markers=True, template="plotly_dark")
-            st.plotly_chart(fig_line, use_container_width=True)
+        with tab1:
+            st.caption("Tren Transaksi Harian")
+            chart_data = df.groupby('Tanggal')[['Masuk', 'Keluar']].sum().reset_index()
+            st.bar_chart(chart_data, x='Tanggal', y=['Masuk', 'Keluar'])
             
-        with c2:
-            st.subheader("Sebaran Kategori (Pie Chart)")
-            fig_pie = px.pie(df, names='kategori', values='total', template="plotly_dark", hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+        with tab2:
+            st.caption("Proporsi Pengeluaran vs Pemasukan")
+            pie_df = pd.DataFrame({'Tipe': ['Masuk', 'Keluar'], 'Nilai': [total_masuk, total_keluar]})
+            fig = px.pie(pie_df, values='Nilai', names='Tipe', title='Rasio Keuangan')
+            st.plotly_chart(fig)
+    else:
+        st.warning("Belum ada data untuk ditampilkan.")
 
-        st.subheader("Analisa Performa Barang (Bar Chart)")
-        fig_bar = px.bar(df, x='item', y='jumlah', color='status', template="plotly_dark")
-        st.plotly_chart(fig_bar, use_container_width=True)
+# B. INPUT TRANSAKSI (Gaya Spreadsheet/Excel)
+elif menu == "Input Transaksi (Excel Style)":
+    st.title("📝 Input Data & Stok")
+    st.markdown("Anda bisa mengedit tabel di bawah ini layaknya **Excel** (Klik 2x pada sel).")
 
-# === SPREADSHEET MODE (FITUR PARALEL & RUMUS) ===
-elif menu == "Spreadsheet Mode (Excel)":
-    st.header("📝 Input Data Masal (Excel Mode)")
-    st.caption("Di sini Anda bisa copy-paste dari Excel, mengedit tabel, filter, sort, dan pivot.")
-    
-    # Load Data dari Database
-    df_current = get_data()
-    
-    if df_current.empty:
-        # Template awal jika kosong
-        df_current = pd.DataFrame({
-            'tanggal': [datetime.now().strftime('%Y-%m-%d')],
-            'kategori': ['Pemasukan'],
-            'item': ['Contoh Barang'],
-            'jumlah': [10],
-            'harga': [5000],
-            'total': [50000],
-            'status': ['Lunas'],
-            'prioritas': ['Normal'],
-            'user': ['Admin']
-        })
-
-    # KONFIGURASI AG-GRID (RAHASIA EXCEL DI STREAMLIT)
-    gb = GridOptionsBuilder.from_dataframe(df_current)
-    gb.configure_pagination(paginationAutoPageSize=True) # Halaman otomatis
-    gb.configure_side_bar() # Sidebar filter kanan
-    gb.configure_default_column(groupable=True, value=True, enableRowGroup=True, aggFunc='sum', editable=True)
-    
-    # Warnai Tabel (Conditional Formatting)
-    js_code = """
-    function(params) {
-        if (params.value == 'Tinggi') {
-            return {
-                'color': 'white',
-                'backgroundColor': '#ff4b4b'
-            }
-        }
-    };
-    """
-    gb.configure_column("prioritas", cellStyle=st.text_code(js_code))
+    # Konfigurasi Tabel Interaktif (AgGrid)
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_pagination(paginationAutoPageSize=True)
+    gb.configure_default_column(editable=True, groupable=True)
+    gb.configure_column("Tanggal", type=["dateColumnFilter","customDateTimeFormat"], custom_format_string='yyyy-MM-dd')
+    gb.configure_column("Masuk", type=["numericColumn","numberColumnFilter","customNumericFormat"], precision=0)
+    gb.configure_column("Keluar", type=["numericColumn","numberColumnFilter","customNumericFormat"], precision=0)
     gridOptions = gb.build()
 
-    # Tampilkan Tabel Excel
     grid_response = AgGrid(
-        df_current, 
+        df, 
         gridOptions=gridOptions,
-        data_return_mode='AS_INPUT', 
-        update_mode='MODEL_CHANGED', 
-        fit_columns_on_grid_load=True,
-        theme='balham', # Tema mirip Excel
-        enable_enterprise_modules=True,
+        enable_enterprise_modules=False,
         height=400, 
         width='100%',
-        allow_unsafe_jscode=True
+        theme='streamlit' # Pilihan tema tabel
     )
 
     # Tombol Simpan Perubahan
-    if st.button("💾 SIMPAN SEMUA PERUBAHAN KE DATABASE"):
-        updated_df = grid_response['data']
-        # Hitung ulang rumus Total otomatis (Harga x Jumlah)
-        updated_df['total'] = pd.to_numeric(updated_df['jumlah']) * pd.to_numeric(updated_df['harga'])
-        
-        save_data_bulk(updated_df)
-        st.success("Database berhasil diperbarui! Semua karyawan bisa melihat data baru.")
-        st.experimental_rerun()
+    if st.button("💾 Simpan Perubahan ke Database"):
+        new_df = pd.DataFrame(grid_response['data'])
+        save_data(new_df)
+        st.success("Data berhasil diperbarui!")
 
-    # Rumus Pivot Cepat
-    st.divider()
-    st.subheader("🧮 Rumus Cepat (Pivot)")
-    col_sum, col_avg, col_max = st.columns(3)
-    col_sum.metric("SUM (Total Uang)", f"Rp {df_current['total'].sum():,.0f}")
-    col_avg.metric("AVERAGE (Rata-rata)", f"Rp {df_current['total'].mean():,.0f}")
-    col_max.metric("MAX (Transaksi Terbesar)", f"Rp {df_current['total'].max():,.0f}")
+    # Form Input Manual Cepat
+    with st.expander("➕ Tambah Data Manual (Formulir)"):
+        with st.form("entry_form"):
+            c1, c2 = st.columns(2)
+            tgl = c1.date_input("Tanggal")
+            kategori = c2.selectbox("Kategori", ["Penjualan", "Pembelian Stok", "Operasional", "Gaji"])
+            ket = st.text_input("Keterangan Item")
+            masuk = c1.number_input("Pemasukan (Rp)", min_value=0)
+            keluar = c2.number_input("Pengeluaran (Rp)", min_value=0)
+            pelanggan = st.text_input("Nama Pelanggan/Suplier")
+            
+            submitted = st.form_submit_button("Submit Data")
+            if submitted:
+                new_data = pd.DataFrame([{
+                    'Tanggal': tgl, 'Kategori': kategori, 'Keterangan': ket,
+                    'Masuk': masuk, 'Keluar': keluar, 'Pelanggan': pelanggan, 'Status': 'Baru'
+                }])
+                df = pd.concat([df, new_data], ignore_index=True)
+                save_data(df)
+                st.rerun() # Refresh halaman
 
-# === INVOICE MAKER ===
-elif menu == "Invoice & PDF":
-    st.header("🖨️ Cetak Dokumen")
+# C. INVOICE & PRINT
+elif menu == "Invoice & Print":
+    st.title("🖨️ Cetak Invoice / Laporan")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Buat Invoice Customer")
-        inv_nama = st.text_input("Nama Customer")
-        inv_items = st.text_area("List Barang (Pisahkan dengan koma)", "Laptop Asus, Mouse Logitech")
-        inv_total = st.number_input("Total Tagihan", 0)
-        
-        if st.button("Generate Invoice PDF"):
-            # Simple PDF Generator Logic
-            pdf = f"INVOICE\nKepada: {inv_nama}\nTanggal: {datetime.now()}\n\nBarang: {inv_items}\n\nTOTAL: Rp {inv_total}"
-            # Di aplikasi nyata kita pakai FPDF, ini simulasi text file biar simple
-            st.download_button("Download PDF", pdf, file_name=f"Invoice_{inv_nama}.txt")
-
-    with col2:
-        st.subheader("Backup Data Lengkap")
-        conn = sqlite3.connect('ultra_erp.db')
-        df_download = pd.read_sql("SELECT * FROM transaksi", conn)
-        conn.close()
-        
-        # Download Excel
-        towrite = BytesIO()
-        df_download.to_excel(towrite, index=False)
-        towrite.seek(0)
-        st.download_button("📥 Download Excel Backup", towrite, "backup_data.xlsx")
-        
-        # Download CSV
-        st.download_button("📥 Download CSV", df_download.to_csv(index=False), "backup_data.csv")
-
-# === QR TOOLS ===
-elif menu == "QR Code & Tools":
-    st.header("📱 QR Generator & Link")
+    # Pilih Data
+    pilihan = st.selectbox("Pilih Transaksi untuk Invoice:", df['Keterangan'].unique())
+    data_inv = df[df['Keterangan'] == pilihan].iloc[0] if not df.empty else None
     
-    text_qr = st.text_input("Masukkan Link Data / Kode Barang / Nama:")
-    nama_file_qr = st.text_input("Nama File QR:", "kode_qr")
-    
-    if st.button("Buat QR Code"):
-        img = qrcode.make(text_qr)
-        buf = BytesIO()
-        img.save(buf)
-        byte_im = buf.getvalue()
-        st.image(byte_im, width=200)
-        st.download_button("Simpan Gambar QR", byte_im, f"{nama_file_qr}.png", "image/png")
+    if data_inv is not None:
+        st.write("Preview Data:", data_inv)
         
-    st.info("💡 Tips: Print QR ini dan tempel di gudang. Saat discan akan memunculkan teks/link yang kamu masukkan.")
+        if st.button("Generate Invoice (PDF)"):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+            pdf.cell(200, 10, txt="INVOICE TAGIHAN", ln=1, align='C')
+            pdf.cell(200, 10, txt=f"Tanggal: {data_inv['Tanggal']}", ln=2, align='L')
+            pdf.cell(200, 10, txt=f"Item: {data_inv['Keterangan']}", ln=3, align='L')
+            pdf.cell(200, 10, txt=f"Total Tagihan: Rp {data_inv['Masuk'] if data_inv['Masuk'] > 0 else data_inv['Keluar']}", ln=4, align='L')
+            
+            # Simpan ke memory buffer agar bisa didownload
+            html = pdf.output(dest='S').encode('latin-1')
+            st.download_button(label="Download PDF", data=html, file_name=f"Invoice_{pilihan}.pdf", mime='application/pdf')
+
+    st.markdown("---")
+    # Download Seluruh Data (Backup)
+    st.subheader("Backup Data")
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Laporan Excel/CSV", data=csv, file_name="laporan_keuangan.csv")
+
+# D. FILE MANAGER & QR CODE
+elif menu == "File Manager & QR":
+    st.title("📂 File & QR Generator")
+    
+    # 1. Upload File
+    uploaded_file = st.file_uploader("Upload Bukti / Foto / Video", type=['png', 'jpg', 'pdf', 'mp4'])
+    if uploaded_file is not None:
+        st.success(f"File {uploaded_file.name} berhasil di-upload sementara!")
+        # Di sini bisa ditambahkan logika simpan ke folder
+        
+    st.markdown("---")
+    
+    # 2. QR Code Generator
+    st.subheader("Buat QR Code Sendiri")
+    link_data = st.text_input("Masukan Link / Teks untuk dijadikan QR Code:")
+    nama_qr = st.text_input("Label QR Code:")
+    
+    if link_data and st.button("Generate QR"):
+        qr = qrcode.make(link_data)
+        buffer = BytesIO()
+        qr.save(buffer, format="PNG")
+        img_bytes = buffer.getvalue()
+        
+        st.image(img_bytes, caption=f"QR Code: {nama_qr}", width=200)
+        st.download_button("Download QR Image", data=img_bytes, file_name=f"QR_{nama_qr}.png", mime="image/png")
+
+# E. KONTAK & PRIORITAS
+elif menu == "Kontak & Prioritas":
+    st.title("☎️ Manajemen Kontak")
+    
+    # Simple form kontak
+    c1, c2, c3 = st.columns([2, 2, 1])
+    nama = c1.text_input("Nama Kontak")
+    telp = c2.text_input("No. Telepon")
+    prioritas = c3.checkbox("Pin / Prioritas Tinggi? ⭐")
+    
+    if st.button("Simpan Kontak"):
+        st.success(f"Kontak {nama} {'(PENTING)' if prioritas else ''} tersimpan!")
+        # Logika simpan ke database kontak bisa ditambahkan di sini
